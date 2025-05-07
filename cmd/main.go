@@ -1,17 +1,14 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
-	"log/slog"
 	"os"
 
+	"github.com/tneuqole/texteditor/internal/vt100"
 	"golang.org/x/term"
 )
-
-type Editor struct {
-	Logger *slog.Logger
-	Exit   bool
-}
 
 // Ctrl+c sets bits 5 & 6 of c to 0
 // Use & to convert c to Ctrl-c
@@ -19,65 +16,128 @@ func CtrlKey(c rune) rune {
 	return c & 0b0011111
 }
 
-func (e *Editor) ReadKey() rune {
-	var c rune
-	_, err := fmt.Scanf("%c", &c)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Printf("%d: %c\n\r", c, c)
-
-	return c
+type Editor struct {
+	In   *bufio.Reader
+	Out  *os.File
+	Buf  *bytes.Buffer
+	Exit bool
+	Rows int
+	Cols int
 }
 
-func (e *Editor) ProcessKey(c rune) {
+func (e *Editor) Flush() {
+	e.Buf.WriteTo(e.Out)
+	e.Buf.Reset()
+}
+
+func (e *Editor) ReadKey() (rune, error) {
+	c, _, err := e.In.ReadRune()
+	if err != nil {
+		return 0, err
+	}
+
+	// fmt.Printf("%d: %c\n\r", c, c)
+
+	return c, nil
+}
+
+func (e *Editor) ProcessKey() error {
+	c, err := e.ReadKey()
+	if err != nil {
+		return err
+	}
+
 	switch c {
 	case CtrlKey('q'):
+		e.ClearScreen()
+		e.Flush()
 		e.Exit = true
-	case CtrlKey('r'):
-		e.RefreshScreen()
+	default:
+		fmt.Printf("%d: %c\n\r", c, c)
 	}
+
+	return nil
+}
+
+func (e *Editor) ClearScreen() {
+	eid := vt100.EraseInDisplay{Arg: vt100.EIDAll}
+	eid.Write(e.Buf)
+}
+
+func (e *Editor) MoveCursorTopLeft() {
+	cp := vt100.CursorPosition{Row: 1, Column: 1}
+	cp.Write(e.Buf)
 }
 
 func (e *Editor) RefreshScreen() {
-	fmt.Print("\x1b[2J")
-	fmt.Print("\x1b[H")
+	e.ClearScreen()
+	e.DrawRows()
+	e.MoveCursorTopLeft()
+
+	e.Flush()
 }
 
 func (e *Editor) Die(err error) {
-	e.RefreshScreen()
-	fmt.Println(err.Error())
-	e.Exit = true
+	e.ClearScreen()
+	e.Out.WriteString(err.Error()) // TODO: write to stderr?
 }
 
 func (e *Editor) DrawRows() {
-	for range 24 {
-		fmt.Print("~\r\n")
+	for i := range e.Rows {
+		e.Buf.WriteString("~")
+		if i < e.Rows-1 {
+			e.Buf.WriteString("\n\r")
+		}
 	}
 }
 
-func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
+func (e *Editor) GetCursorPosition() (*vt100.CursorPositionReport, error) {
+	var buf bytes.Buffer
+	dsr := vt100.DeviceStatusReport{
+		Arg: vt100.DSRPosition,
+	}
+	dsr.Write(&buf)
+	fmt.Print(buf.String())
 
+	var cpr vt100.CursorPositionReport
+	cpr.Read(e.In)
+
+	// fmt.Printf("row=%d, col=%d\n\r", cpr.Row, cpr.Column)
+
+	return &cpr, nil
+}
+
+func main() {
 	e := Editor{
-		Logger: logger,
+		In:  bufio.NewReader(os.Stdin),
+		Out: os.Stdout,
+		Buf: &bytes.Buffer{},
 	}
 
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	fd := int(os.Stdin.Fd())
+	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		e.Die(err)
+		return
 	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
+	defer term.Restore(fd, oldState)
 
-	e.RefreshScreen()
-	e.DrawRows()
+	rows, cols, err := term.GetSize(fd)
+	if err != nil {
+		e.Die(err)
+		return
+	}
+
+	e.Rows = rows
+	e.Cols = cols
 
 	for !e.Exit {
-		key := e.ReadKey()
-		e.ProcessKey(key)
+		e.RefreshScreen()
+		err = e.ProcessKey()
+		if err != nil {
+			e.Die(err)
+			return
+		}
 
 	}
 }
