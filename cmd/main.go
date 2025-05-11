@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/tneuqole/texteditor/internal/vt100"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -40,9 +42,28 @@ func (e *Editor) ReadKey() (rune, error) {
 		return 0, err
 	}
 
-	// TODO: read 2 more chars and set deadline to 100 ms
-	// handle timeout error --> return Esc
 	if c == vt100.Esc {
+		c2, _, err := e.In.ReadRune()
+		if err != nil {
+			return c, nil
+		}
+		c3, _, err := e.In.ReadRune()
+		if err != nil {
+			return c, nil
+		}
+
+		if c2 == '[' {
+			switch c3 {
+			case 'A':
+				return 'k', nil
+			case 'B':
+				return 'j', nil
+			case 'C':
+				return 'l', nil
+			case 'D':
+				return 'h', nil
+			}
+		}
 	}
 
 	// fmt.Printf("%d: %c\n\r", c, c)
@@ -112,8 +133,12 @@ func (e *Editor) RefreshScreen() {
 }
 
 func (e *Editor) Die(err error) {
+	e.MoveCursorTopLeft()
 	e.ClearScreen()
-	e.Out.WriteString(err.Error()) // TODO: write to stderr?
+	e.Flush()
+	if err != nil {
+		fmt.Fprintf(e.Out, "%T: %s\n", err, err) // TODO: write to stderr?
+	}
 }
 
 func (e *Editor) DrawRows() {
@@ -152,6 +177,32 @@ func (e *Editor) GetCursorPosition() (*vt100.CursorPositionReport, error) {
 	return &cpr, nil
 }
 
+// based on term.MakeRaw
+func makeRaw(fd int) (*unix.Termios, error) {
+	oldTermios, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)
+	if err != nil {
+		return nil, err
+	}
+
+	rawTermios := *oldTermios
+
+	rawTermios.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP | unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
+	rawTermios.Oflag &^= unix.OPOST
+	rawTermios.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
+	rawTermios.Cflag &^= unix.CSIZE | unix.PARENB
+	rawTermios.Cflag |= unix.CS8
+
+	// set min bytes to 0 and timeout to 100ms so reading doesn't block
+	rawTermios.Cc[unix.VMIN] = 0
+	rawTermios.Cc[unix.VTIME] = 1
+
+	if err := unix.IoctlSetTermios(fd, unix.TIOCSETA, &rawTermios); err != nil {
+		return nil, err
+	}
+
+	return oldTermios, nil
+}
+
 func main() {
 	e := Editor{
 		In:  bufio.NewReader(os.Stdin),
@@ -160,12 +211,13 @@ func main() {
 	}
 
 	fd := int(os.Stdin.Fd())
-	oldState, err := term.MakeRaw(fd)
+	oldTermios, err := makeRaw(fd)
 	if err != nil {
 		e.Die(err)
 		return
 	}
-	defer term.Restore(fd, oldState)
+
+	defer unix.IoctlSetTermios(fd, unix.TIOCSETA, oldTermios)
 
 	cols, rows, err := term.GetSize(fd)
 	if err != nil {
@@ -179,10 +231,11 @@ func main() {
 	for !e.Exit {
 		e.RefreshScreen()
 		err = e.ProcessKey()
-		if err != nil {
+		if err != nil && err != io.EOF {
 			e.Die(err)
 			return
 		}
 
 	}
+	e.Die(nil)
 }
