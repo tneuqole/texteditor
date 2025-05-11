@@ -7,10 +7,9 @@ import (
 	"os"
 
 	"github.com/tneuqole/texteditor/internal/keys"
+	"github.com/tneuqole/texteditor/internal/version"
 	"github.com/tneuqole/texteditor/internal/vt100"
 )
-
-const Version = "1.0.0"
 
 type Editor struct {
 	In   *bufio.Reader
@@ -31,29 +30,19 @@ func New(in, out *os.File) *Editor {
 	}
 }
 
+/*** Core Logic ***/
+
 func (e *Editor) Flush() {
 	e.Buf.WriteTo(e.Out)
 	e.Buf.Reset()
 }
 
-func (e *Editor) MoveCursor(c rune) {
-	switch c {
-	case keys.ArrowLeft:
-		if e.Cx != 0 {
-			e.Cx--
-		}
-	case keys.ArrowRight:
-		if e.Cx < e.Cols-1 {
-			e.Cx++
-		}
-	case keys.ArrowUp:
-		if e.Cy > 0 {
-			e.Cy--
-		}
-	case keys.ArrowDown:
-		if e.Cy < e.Rows-1 {
-			e.Cy++
-		}
+func (e *Editor) Die(err error) {
+	e.MoveCursorTopLeft()
+	e.ClearScreen()
+	e.Flush()
+	if err != nil {
+		fmt.Fprintf(e.Out, "%T: %s\n", err, err) // TODO: write to stderr?
 	}
 }
 
@@ -142,9 +131,27 @@ func (e *Editor) ProcessKey() error {
 	return nil
 }
 
-func (e *Editor) ClearScreen() {
-	ed := vt100.EraseInDisplay{Arg: vt100.EDAll}
-	ed.Write(e.Buf)
+/*** Cursor Methods ***/
+
+func (e *Editor) MoveCursor(c rune) {
+	switch c {
+	case keys.ArrowLeft:
+		if e.Cx != 0 {
+			e.Cx--
+		}
+	case keys.ArrowRight:
+		if e.Cx < e.Cols-1 {
+			e.Cx++
+		}
+	case keys.ArrowUp:
+		if e.Cy > 0 {
+			e.Cy--
+		}
+	case keys.ArrowDown:
+		if e.Cy < e.Rows-1 {
+			e.Cy++
+		}
+	}
 }
 
 func (e *Editor) MoveCursorTopLeft() {
@@ -162,6 +169,29 @@ func (e *Editor) ShowCursor() {
 	sm.Write(e.Buf)
 }
 
+func (e *Editor) GetCursorPosition() (*vt100.CursorPositionReport, error) {
+	var buf bytes.Buffer
+	dsr := vt100.DeviceStatusReport{
+		Arg: vt100.DSRPosition,
+	}
+	dsr.Write(&buf)
+	fmt.Print(buf.String())
+
+	var cpr vt100.CursorPositionReport
+	cpr.Read(e.In)
+
+	// fmt.Printf("row=%d, col=%d\n\r", cpr.Row, cpr.Column)
+
+	return &cpr, nil
+}
+
+/*** Screen Methods ***/
+
+func (e *Editor) ClearScreen() {
+	ed := vt100.EraseInDisplay{Arg: vt100.EDAll}
+	ed.Write(e.Buf)
+}
+
 func (e *Editor) RefreshScreen() {
 	e.HideCursor()
 	// why do you need to do this to draw the screen?
@@ -177,22 +207,13 @@ func (e *Editor) RefreshScreen() {
 	e.Flush()
 }
 
-func (e *Editor) Die(err error) {
-	e.MoveCursorTopLeft()
-	e.ClearScreen()
-	e.Flush()
-	if err != nil {
-		fmt.Fprintf(e.Out, "%T: %s\n", err, err) // TODO: write to stderr?
-	}
-}
-
 func (e *Editor) DrawRows() {
 	el := vt100.EraseInLine{Arg: vt100.ELPosToEnd}
 	for i := range e.Rows {
 		e.Buf.WriteString("~")
 
 		if i == e.Rows/3 {
-			msg := "goeditor -- " + Version
+			msg := "goeditor -- " + version.Version
 			for range (e.Cols - len(msg)) / 2 {
 				e.Buf.WriteString(" ")
 			}
@@ -204,20 +225,4 @@ func (e *Editor) DrawRows() {
 			e.Buf.WriteString("\n\r")
 		}
 	}
-}
-
-func (e *Editor) GetCursorPosition() (*vt100.CursorPositionReport, error) {
-	var buf bytes.Buffer
-	dsr := vt100.DeviceStatusReport{
-		Arg: vt100.DSRPosition,
-	}
-	dsr.Write(&buf)
-	fmt.Print(buf.String())
-
-	var cpr vt100.CursorPositionReport
-	cpr.Read(e.In)
-
-	// fmt.Printf("row=%d, col=%d\n\r", cpr.Row, cpr.Column)
-
-	return &cpr, nil
 }
