@@ -9,6 +9,7 @@ const (
 	PageDown
 	Home
 	End
+	Del
 )
 
 // Ctrl+c sets bits 5 & 6 of c to 0

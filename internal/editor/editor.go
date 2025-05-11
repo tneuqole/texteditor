@@ -52,33 +52,44 @@ func (e *Editor) ReadKey() (rune, error) {
 		return 0, err
 	}
 
+	var seq [3]rune
 	if c == vt100.Esc {
-		c2, _, err := e.In.ReadRune()
+		seq[0], _, err = e.In.ReadRune()
 		if err != nil {
 			return c, nil
 		}
-		c3, _, err := e.In.ReadRune()
+		seq[1], _, err = e.In.ReadRune()
 		if err != nil {
 			return c, nil
 		}
 
-		if c2 == '[' {
-			if c3 >= '0' && c3 <= '9' {
-				c4, _, err := e.In.ReadRune()
+		if seq[0] == '[' {
+			if seq[1] >= '0' && seq[1] <= '9' {
+				seq[2], _, err = e.In.ReadRune()
 				if err != nil {
 					return c, nil
 				}
 
-				if c4 == '~' {
-					switch c3 {
+				if seq[2] == '~' {
+					switch seq[1] {
+					case '1':
+						return keys.Home, nil
+					case '3':
+						return keys.Del, nil
+					case '4':
+						return keys.End, nil
 					case '5':
 						return keys.PageUp, nil
 					case '6':
 						return keys.PageDown, nil
+					case '7':
+						return keys.Home, nil
+					case '8':
+						return keys.End, nil
 					}
 				}
 			} else {
-				switch c3 {
+				switch seq[1] {
 				case 'A':
 					return keys.ArrowUp, nil
 				case 'B':
@@ -87,7 +98,18 @@ func (e *Editor) ReadKey() (rune, error) {
 					return keys.ArrowRight, nil
 				case 'D':
 					return keys.ArrowLeft, nil
+				case 'H':
+					return keys.Home, nil
+				case 'F':
+					return keys.End, nil
 				}
+			}
+		} else if seq[0] == 'O' {
+			switch seq[1] {
+			case 'H':
+				return keys.Home, nil
+			case 'F':
+				return keys.End, nil
 			}
 		}
 	}
@@ -108,13 +130,7 @@ func (e *Editor) ProcessKey() error {
 		e.ClearScreen()
 		e.Flush()
 		e.Exit = true
-	case keys.ArrowLeft:
-		e.MoveCursor(c)
-	case keys.ArrowRight:
-		e.MoveCursor(c)
-	case keys.ArrowUp:
-		e.MoveCursor(c)
-	case keys.ArrowDown:
+	case keys.ArrowLeft, keys.ArrowRight, keys.ArrowUp, keys.ArrowDown:
 		e.MoveCursor(c)
 	case keys.PageUp:
 		for range e.Rows {
@@ -124,6 +140,10 @@ func (e *Editor) ProcessKey() error {
 		for range e.Rows {
 			e.MoveCursor(keys.ArrowDown)
 		}
+	case keys.Home:
+		e.Cx = 0
+	case keys.End:
+		e.Cx = e.Cols - 1
 	default:
 		fmt.Printf("%d: %c\n\r", c, c)
 	}
