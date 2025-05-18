@@ -53,8 +53,16 @@ func main() {
 		return
 	}
 
-	e.Rows = rows
-	e.Cols = cols
+	e.ScreenRows = rows
+	e.ScreenCols = cols
+
+	if len(os.Args) > 1 {
+		err = e.Open(os.Args[1])
+		if err != nil {
+			e.Die(err)
+			return
+		}
+	}
 
 	for !e.Exit {
 		e.RefreshScreen()

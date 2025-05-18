@@ -11,15 +11,22 @@ import (
 	"github.com/tneuqole/texteditor/internal/vt100"
 )
 
+type Line struct {
+	Size int
+	Text []rune
+}
+
 type Editor struct {
-	In   *bufio.Reader
-	Out  *os.File
-	Buf  *bytes.Buffer
-	Exit bool
-	Rows int // Window Size
-	Cols int
-	Cx   int // Cursor Position
-	Cy   int
+	In         *bufio.Reader
+	Out        *os.File
+	Buf        *bytes.Buffer
+	Exit       bool
+	ScreenRows int // Window Size
+	ScreenCols int
+	CursorX    int // Cursor Position
+	CursorY    int
+	Lines      []Line
+	NumLines   int
 }
 
 func New(in, out *os.File) *Editor {
@@ -32,15 +39,15 @@ func New(in, out *os.File) *Editor {
 
 /*** Core Logic ***/
 
-func (e *Editor) Flush() {
+func (e *Editor) flush() {
 	e.Buf.WriteTo(e.Out)
 	e.Buf.Reset()
 }
 
 func (e *Editor) Die(err error) {
-	e.MoveCursorTopLeft()
+	e.moveCursorTopLeft()
 	e.ClearScreen()
-	e.Flush()
+	e.flush()
 	if err != nil {
 		fmt.Fprintf(e.Out, "%T: %s\n", err, err) // TODO: write to stderr?
 	}
@@ -128,22 +135,22 @@ func (e *Editor) ProcessKey() error {
 	switch c {
 	case keys.CtrlKey('q'):
 		e.ClearScreen()
-		e.Flush()
+		e.flush()
 		e.Exit = true
 	case keys.ArrowLeft, keys.ArrowRight, keys.ArrowUp, keys.ArrowDown:
 		e.MoveCursor(c)
 	case keys.PageUp:
-		for range e.Rows {
+		for range e.ScreenRows {
 			e.MoveCursor(keys.ArrowUp)
 		}
 	case keys.PageDown:
-		for range e.Rows {
+		for range e.ScreenRows {
 			e.MoveCursor(keys.ArrowDown)
 		}
 	case keys.Home:
-		e.Cx = 0
+		e.CursorX = 0
 	case keys.End:
-		e.Cx = e.Cols - 1
+		e.CursorX = e.ScreenCols - 1
 	default:
 		fmt.Printf("%d: %c\n\r", c, c)
 	}
@@ -156,35 +163,35 @@ func (e *Editor) ProcessKey() error {
 func (e *Editor) MoveCursor(c rune) {
 	switch c {
 	case keys.ArrowLeft:
-		if e.Cx != 0 {
-			e.Cx--
+		if e.CursorX != 0 {
+			e.CursorX--
 		}
 	case keys.ArrowRight:
-		if e.Cx < e.Cols-1 {
-			e.Cx++
+		if e.CursorX < e.ScreenCols-1 {
+			e.CursorX++
 		}
 	case keys.ArrowUp:
-		if e.Cy > 0 {
-			e.Cy--
+		if e.CursorY > 0 {
+			e.CursorY--
 		}
 	case keys.ArrowDown:
-		if e.Cy < e.Rows-1 {
-			e.Cy++
+		if e.CursorY < e.ScreenRows-1 {
+			e.CursorY++
 		}
 	}
 }
 
-func (e *Editor) MoveCursorTopLeft() {
+func (e *Editor) moveCursorTopLeft() {
 	cp := vt100.CursorPosition{Row: 1, Column: 1}
 	cp.Write(e.Buf)
 }
 
-func (e *Editor) HideCursor() {
+func (e *Editor) hideCursor() {
 	rm := vt100.ResetMode{Arg: vt100.ModeCursorVisible}
 	rm.Write(e.Buf)
 }
 
-func (e *Editor) ShowCursor() {
+func (e *Editor) showCursor() {
 	sm := vt100.SetMode{Arg: vt100.ModeCursorVisible}
 	sm.Write(e.Buf)
 }
@@ -213,36 +220,71 @@ func (e *Editor) ClearScreen() {
 }
 
 func (e *Editor) RefreshScreen() {
-	e.HideCursor()
+	e.hideCursor()
 	// why do you need to do this to draw the screen?
 	// removing it results in weird behavior when moving the cursor
-	e.MoveCursorTopLeft()
-	e.DrawRows()
+	e.moveCursorTopLeft()
+	e.drawRows()
 
-	cp := vt100.CursorPosition{Row: e.Cy + 1, Column: e.Cx + 1}
+	cp := vt100.CursorPosition{Row: e.CursorY + 1, Column: e.CursorX + 1}
 	cp.Write(e.Buf)
 
-	e.ShowCursor()
+	e.showCursor()
 
-	e.Flush()
+	e.flush()
 }
 
-func (e *Editor) DrawRows() {
+func (e *Editor) drawRows() {
 	el := vt100.EraseInLine{Arg: vt100.ELPosToEnd}
-	for i := range e.Rows {
-		e.Buf.WriteString("~")
+	for y := range e.ScreenRows {
+		if y >= e.NumLines {
+			e.Buf.WriteString("~")
 
-		if i == e.Rows/3 {
-			msg := "goeditor -- " + version.Version
-			for range (e.Cols - len(msg)) / 2 {
-				e.Buf.WriteString(" ")
+			if e.NumLines == 0 && y == e.ScreenRows/3 {
+				msg := "goeditor -- " + version.Version
+				for range (e.ScreenCols - len(msg)) / 2 {
+					e.Buf.WriteString(" ")
+				}
+				e.Buf.WriteString(msg)
 			}
-			e.Buf.WriteString(msg)
+
+		} else {
+			// TODO: handle overflow
+			e.Buf.WriteString(string(e.Lines[y].Text))
 		}
 
 		el.Write(e.Buf)
-		if i < e.Rows-1 {
+
+		if y < e.ScreenRows-1 {
 			e.Buf.WriteString("\n\r")
 		}
 	}
+}
+
+/*** line operations ***/
+
+func (e *Editor) AppendLine(text []rune) {
+	l := Line{
+		Text: text,
+		Size: len(text),
+	}
+	e.Lines = append(e.Lines, l)
+	e.NumLines++
+}
+
+/*** file i/o ***/
+
+func (e *Editor) Open(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		text := scanner.Text()
+		e.AppendLine([]rune(text))
+	}
+
+	return nil
 }
