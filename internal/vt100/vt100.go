@@ -12,7 +12,7 @@ const (
 	EscSeq = "\x1b["
 )
 
-// TODO: if performance is a concern, use a string builder
+// Note: if performance is a concern, use a string builder
 func write(buf *bytes.Buffer, format string, args ...any) {
 	buf.WriteString(EscSeq)
 	fmt.Fprintf(buf, format, args...)

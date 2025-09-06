@@ -2,12 +2,23 @@ package main
 
 import (
 	"io"
+	"log"
 	"os"
 
 	"github.com/tneuqole/texteditor/internal/editor"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
+
+func openLogFile() *os.File {
+	f, err := os.OpenFile("goeditor.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		panic(err)
+	}
+	log.SetOutput(f)
+	log.SetFlags(log.LstdFlags | log.Lshortfile) // timestamp + file:line
+	return f
+}
 
 // based on term.MakeRaw
 func makeRaw(fd int) (*unix.Termios, error) {
@@ -36,7 +47,13 @@ func makeRaw(fd int) (*unix.Termios, error) {
 }
 
 func main() {
+	logFile := openLogFile()
+
+	defer logFile.Close()
+
 	e := editor.New(os.Stdin, os.Stdout)
+
+	e.ClearScreen()
 
 	fd := int(os.Stdin.Fd())
 	oldTermios, err := makeRaw(fd)

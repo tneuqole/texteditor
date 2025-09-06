@@ -11,9 +11,18 @@ import (
 	"github.com/tneuqole/texteditor/internal/vt100"
 )
 
+const (
+	TabStop = 4
+	Tab     = '\t'
+)
+
+// store raw text and formatted text.
+// see updateLine() for formatting details
 type Line struct {
-	Size int
-	Text []rune
+	Raw       []rune
+	RSize     int
+	Formatted []rune
+	FSize     int
 }
 
 type Editor struct {
@@ -23,10 +32,13 @@ type Editor struct {
 	Exit       bool
 	ScreenRows int // Window Size
 	ScreenCols int
-	CursorX    int // Cursor Position
+	CursorX    int // Cursor Position in raw line
+	CursorXf   int // Cursor Position in formatted line
 	CursorY    int
 	Lines      []Line
 	NumLines   int
+	RowOffset  int
+	ColOffset  int
 }
 
 func New(in, out *os.File) *Editor {
@@ -53,7 +65,7 @@ func (e *Editor) Die(err error) {
 	}
 }
 
-func (e *Editor) ReadKey() (rune, error) {
+func (e *Editor) readKey() (rune, error) {
 	c, _, err := e.In.ReadRune()
 	if err != nil {
 		return 0, err
@@ -70,7 +82,8 @@ func (e *Editor) ReadKey() (rune, error) {
 			return c, nil
 		}
 
-		if seq[0] == '[' {
+		switch seq[0] {
+		case '[':
 			if seq[1] >= '0' && seq[1] <= '9' {
 				seq[2], _, err = e.In.ReadRune()
 				if err != nil {
@@ -111,7 +124,7 @@ func (e *Editor) ReadKey() (rune, error) {
 					return keys.End, nil
 				}
 			}
-		} else if seq[0] == 'O' {
+		case 'O':
 			switch seq[1] {
 			case 'H':
 				return keys.Home, nil
@@ -121,13 +134,11 @@ func (e *Editor) ReadKey() (rune, error) {
 		}
 	}
 
-	// fmt.Printf("%d: %c\n\r", c, c)
-
 	return c, nil
 }
 
 func (e *Editor) ProcessKey() error {
-	c, err := e.ReadKey()
+	c, err := e.readKey()
 	if err != nil {
 		return err
 	}
@@ -138,14 +149,14 @@ func (e *Editor) ProcessKey() error {
 		e.flush()
 		e.Exit = true
 	case keys.ArrowLeft, keys.ArrowRight, keys.ArrowUp, keys.ArrowDown:
-		e.MoveCursor(c)
+		e.moveCursor(c)
 	case keys.PageUp:
 		for range e.ScreenRows {
-			e.MoveCursor(keys.ArrowUp)
+			e.moveCursor(keys.ArrowUp)
 		}
 	case keys.PageDown:
 		for range e.ScreenRows {
-			e.MoveCursor(keys.ArrowDown)
+			e.moveCursor(keys.ArrowDown)
 		}
 	case keys.Home:
 		e.CursorX = 0
@@ -160,25 +171,58 @@ func (e *Editor) ProcessKey() error {
 
 /*** Cursor Methods ***/
 
-func (e *Editor) MoveCursor(c rune) {
+func (e *Editor) setCursorXf() {
+	e.CursorXf = e.CursorX
+
+	line := e.getCurrentLine()
+
+	for i := range line.RSize {
+		if line.Raw[i] == Tab {
+			e.CursorXf = e.CursorXf + TabStop
+		}
+	}
+}
+
+func (e *Editor) moveCursor(c rune) {
+	line := e.getCurrentLine()
+
 	switch c {
 	case keys.ArrowLeft:
-		if e.CursorX != 0 {
+		if e.CursorX > 0 {
 			e.CursorX--
+		} else if e.CursorY > 0 {
+			// moving left at the beginning of a line
+			// goes to end of prev line
+			e.CursorY--
+			e.CursorX = e.Lines[e.CursorY].RSize
 		}
 	case keys.ArrowRight:
-		if e.CursorX < e.ScreenCols-1 {
+		if e.CursorX < line.RSize {
 			e.CursorX++
+		} else if e.CursorX == line.RSize && e.NumLines > e.CursorY {
+			// if we're at the end of the line and there is another line
+			// below, moving right goes to beginning of next line
+			e.CursorY++
+			e.CursorX = 0
 		}
 	case keys.ArrowUp:
 		if e.CursorY > 0 {
 			e.CursorY--
 		}
 	case keys.ArrowDown:
-		if e.CursorY < e.ScreenRows-1 {
+		if e.CursorY < e.NumLines {
 			e.CursorY++
 		}
 	}
+
+	// get the new line if we are not at the end
+	// of the file
+	line = e.getCurrentLine()
+
+	// if we went up or down, cx may be greater than
+	// the new line length. in that case snap cx to the
+	// end of the new line
+	e.CursorX = min(e.CursorX, line.RSize)
 }
 
 func (e *Editor) moveCursorTopLeft() {
@@ -196,22 +240,6 @@ func (e *Editor) showCursor() {
 	sm.Write(e.Buf)
 }
 
-func (e *Editor) GetCursorPosition() (*vt100.CursorPositionReport, error) {
-	var buf bytes.Buffer
-	dsr := vt100.DeviceStatusReport{
-		Arg: vt100.DSRPosition,
-	}
-	dsr.Write(&buf)
-	fmt.Print(buf.String())
-
-	var cpr vt100.CursorPositionReport
-	cpr.Read(e.In)
-
-	// fmt.Printf("row=%d, col=%d\n\r", cpr.Row, cpr.Column)
-
-	return &cpr, nil
-}
-
 /*** Screen Methods ***/
 
 func (e *Editor) ClearScreen() {
@@ -219,14 +247,36 @@ func (e *Editor) ClearScreen() {
 	ed.Write(e.Buf)
 }
 
+func (e *Editor) scroll() {
+	e.setCursorXf()
+
+	if e.CursorY < e.RowOffset {
+		e.RowOffset = e.CursorY
+	}
+
+	if e.CursorY >= e.RowOffset+e.ScreenRows {
+		e.RowOffset = e.CursorY - e.ScreenRows + 1
+	}
+
+	if e.CursorXf < e.ColOffset {
+		e.ColOffset = e.CursorXf
+	}
+
+	if e.CursorXf >= e.ColOffset+e.ScreenCols {
+		e.ColOffset = e.CursorXf - e.ScreenCols + 1
+	}
+}
+
 func (e *Editor) RefreshScreen() {
+	e.scroll()
 	e.hideCursor()
-	// why do you need to do this to draw the screen?
+
+	// TODO: why do you need to do this to draw the screen?
 	// removing it results in weird behavior when moving the cursor
 	e.moveCursorTopLeft()
 	e.drawRows()
 
-	cp := vt100.CursorPosition{Row: e.CursorY + 1, Column: e.CursorX + 1}
+	cp := vt100.CursorPosition{Row: e.CursorY - e.RowOffset + 1, Column: e.CursorXf - e.ColOffset + 1}
 	cp.Write(e.Buf)
 
 	e.showCursor()
@@ -237,7 +287,8 @@ func (e *Editor) RefreshScreen() {
 func (e *Editor) drawRows() {
 	el := vt100.EraseInLine{Arg: vt100.ELPosToEnd}
 	for y := range e.ScreenRows {
-		if y >= e.NumLines {
+		filerow := y + e.RowOffset
+		if filerow >= e.NumLines {
 			e.Buf.WriteString("~")
 
 			if e.NumLines == 0 && y == e.ScreenRows/3 {
@@ -249,8 +300,13 @@ func (e *Editor) drawRows() {
 			}
 
 		} else {
-			// TODO: handle overflow
-			e.Buf.WriteString(string(e.Lines[y].Text))
+			l := max(0, e.Lines[filerow].FSize-e.ColOffset)
+			l = min(l, e.ScreenCols)
+
+			if e.Lines[filerow].FSize > e.ColOffset {
+				e.Buf.WriteString(string(e.Lines[filerow].Formatted[e.ColOffset : e.ColOffset+l]))
+			}
+
 		}
 
 		el.Write(e.Buf)
@@ -263,11 +319,40 @@ func (e *Editor) drawRows() {
 
 /*** line operations ***/
 
-func (e *Editor) AppendLine(text []rune) {
-	l := Line{
-		Text: text,
-		Size: len(text),
+func (e *Editor) getCurrentLine() Line {
+	l := Line{}
+
+	if e.CursorY < e.NumLines {
+		l = e.Lines[e.CursorY]
 	}
+
+	return l
+}
+
+func (e *Editor) updateLine(line *Line) {
+	for i := range line.RSize {
+		c := line.Raw[i]
+		if c == Tab {
+			for range TabStop {
+				line.Formatted = append(line.Formatted, ' ')
+			}
+		} else {
+			line.Formatted = append(line.Formatted, c)
+		}
+	}
+
+	line.FSize = len(line.Formatted)
+}
+
+func (e *Editor) appendLine(text []rune) {
+	l := Line{
+		Raw:       text,
+		RSize:     len(text),
+		Formatted: []rune{},
+	}
+
+	e.updateLine(&l)
+
 	e.Lines = append(e.Lines, l)
 	e.NumLines++
 }
@@ -283,7 +368,7 @@ func (e *Editor) Open(filename string) error {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		text := scanner.Text()
-		e.AppendLine([]rune(text))
+		e.appendLine([]rune(text))
 	}
 
 	return nil
