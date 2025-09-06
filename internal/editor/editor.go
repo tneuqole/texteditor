@@ -151,17 +151,21 @@ func (e *Editor) ProcessKey() error {
 	case keys.ArrowLeft, keys.ArrowRight, keys.ArrowUp, keys.ArrowDown:
 		e.moveCursor(c)
 	case keys.PageUp:
+		e.CursorY = e.RowOffset
 		for range e.ScreenRows {
 			e.moveCursor(keys.ArrowUp)
 		}
 	case keys.PageDown:
+		e.CursorY = min(e.RowOffset+e.ScreenRows-1, e.NumLines)
 		for range e.ScreenRows {
 			e.moveCursor(keys.ArrowDown)
 		}
 	case keys.Home:
 		e.CursorX = 0
 	case keys.End:
-		e.CursorX = e.ScreenCols - 1
+		if e.CursorY < e.NumLines {
+			e.CursorX = e.Lines[e.CursorY].FSize
+		}
 	default:
 		fmt.Printf("%d: %c\n\r", c, c)
 	}
