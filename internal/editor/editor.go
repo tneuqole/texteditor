@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/tneuqole/texteditor/internal/keys"
 	"github.com/tneuqole/texteditor/internal/version"
@@ -25,6 +27,7 @@ type Line struct {
 	FSize     int
 }
 
+// TODO: make fields private where applicable
 type Editor struct {
 	In         *bufio.Reader
 	Out        *os.File
@@ -39,6 +42,9 @@ type Editor struct {
 	NumLines   int
 	RowOffset  int
 	ColOffset  int
+	filename   *string
+	statusMsg  string
+	statusTime time.Time
 }
 
 func New(in, out *os.File) *Editor {
@@ -246,6 +252,60 @@ func (e *Editor) showCursor() {
 
 /*** Screen Methods ***/
 
+func (e *Editor) SetStatusMessage(msg string) {
+	e.statusMsg = msg
+	e.statusTime = time.Now()
+}
+
+func (e *Editor) drawStatusBar() {
+	sgr := vt100.SelectGraphicRendition{Arg: vt100.SelectGraphicRenditionNegative}
+	sgr.Write(e.Buf)
+
+	var builder strings.Builder
+
+	filename := "[No Name]"
+	if e.filename != nil {
+		filename = *e.filename
+	}
+
+	n := min(len(filename), 20)
+
+	builder.WriteRune(' ')
+	builder.WriteString(filename[:n])
+	builder.WriteString(fmt.Sprintf(" - %d lines", e.NumLines))
+
+	leftStatus := builder.String()
+	e.Buf.WriteString(leftStatus)
+
+	builder.Reset()
+
+	builder.WriteString(fmt.Sprintf(" %d/%d ", e.CursorY+1, e.NumLines))
+
+	rightStatus := builder.String()
+
+	for range e.ScreenCols - (len(leftStatus) + len(rightStatus)) {
+		e.Buf.WriteRune(' ')
+	}
+
+	e.Buf.WriteString(rightStatus)
+
+	sgr = vt100.SelectGraphicRendition{Arg: vt100.SelectGraphicRenditionOff}
+	sgr.Write(e.Buf)
+
+	e.Buf.WriteString("\r\n")
+
+	n = min(len(e.statusMsg), e.ScreenCols-1)
+	statusMsg := e.statusMsg[:n]
+
+	eil := vt100.EraseInLine{Arg: vt100.ELPosToEnd}
+	eil.Write(e.Buf)
+
+	if time.Since(e.statusTime) <= 5*time.Second {
+		e.Buf.WriteRune(' ')
+		e.Buf.WriteString(statusMsg)
+	}
+}
+
 func (e *Editor) ClearScreen() {
 	ed := vt100.EraseInDisplay{Arg: vt100.EDAll}
 	ed.Write(e.Buf)
@@ -279,6 +339,7 @@ func (e *Editor) RefreshScreen() {
 	// removing it results in weird behavior when moving the cursor
 	e.moveCursorTopLeft()
 	e.drawRows()
+	e.drawStatusBar()
 
 	cp := vt100.CursorPosition{Row: e.CursorY - e.RowOffset + 1, Column: e.CursorXf - e.ColOffset + 1}
 	cp.Write(e.Buf)
@@ -315,9 +376,7 @@ func (e *Editor) drawRows() {
 
 		el.Write(e.Buf)
 
-		if y < e.ScreenRows-1 {
-			e.Buf.WriteString("\n\r")
-		}
+		e.Buf.WriteString("\n\r")
 	}
 }
 
@@ -374,6 +433,8 @@ func (e *Editor) Open(filename string) error {
 		text := scanner.Text()
 		e.appendLine([]rune(text))
 	}
+
+	e.filename = &filename
 
 	return nil
 }

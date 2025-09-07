@@ -70,7 +70,7 @@ func main() {
 		return
 	}
 
-	e.ScreenRows = rows
+	e.ScreenRows = rows - 2
 	e.ScreenCols = cols
 
 	if len(os.Args) > 1 {
@@ -80,6 +80,8 @@ func main() {
 			return
 		}
 	}
+
+	e.SetStatusMessage("HELP: Ctrl-Q=quit")
 
 	for !e.Exit {
 		e.RefreshScreen()

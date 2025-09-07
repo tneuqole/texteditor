@@ -132,3 +132,18 @@ type ResetMode struct {
 func (cmd *ResetMode) Write(buf *bytes.Buffer) {
 	write(buf, "%sl", cmd.Arg)
 }
+
+type SelectGraphicRenditionArg int
+
+const (
+	SelectGraphicRenditionOff      = 0
+	SelectGraphicRenditionNegative = 7
+)
+
+type SelectGraphicRendition struct {
+	Arg SelectGraphicRenditionArg
+}
+
+func (cmd *SelectGraphicRendition) Write(buf *bytes.Buffer) {
+	write(buf, "%dm", cmd.Arg)
+}
